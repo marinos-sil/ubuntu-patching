@@ -1,0 +1,42 @@
+---
+- name: Ubuntu UAT patching pre-check
+  hosts: uat
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Display hostname
+      ansible.builtin.debug:
+        msg: "Hostname: {{ ansible_hostname }}"
+
+    - name: Display operating system
+      ansible.builtin.debug:
+        msg: >-
+          OS: {{ ansible_distribution }}
+          {{ ansible_distribution_version }}
+          ({{ ansible_distribution_release }})
+
+    - name: Display kernel
+      ansible.builtin.debug:
+        msg: "Kernel: {{ ansible_kernel }}"
+
+    - name: Check disk space
+      ansible.builtin.command:
+        cmd: df -h /
+      register: disk_usage
+      changed_when: false
+
+    - name: Display disk space
+      ansible.builtin.debug:
+        var: disk_usage.stdout
+
+    - name: Check available APT updates
+      ansible.builtin.shell:
+        cmd: apt list --upgradable 2>/dev/null
+      register: apt_updates
+      changed_when: false
+
+    - name: Display available updates
+      ansible.builtin.debug:
+        var: apt_updates.stdout_lines
