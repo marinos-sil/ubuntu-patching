@@ -1,0 +1,157 @@
+---
+- name: Ubuntu UAT patching
+  hosts: uat
+  become: true
+  gather_facts: true
+
+  vars:
+    min_free_space_gb: 5
+
+  tasks:
+
+    # ---------------------------------------------------------
+    # SAFETY CHECK 1 - Operating system
+    # ---------------------------------------------------------
+
+    - name: Verify Ubuntu
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+        fail_msg: >
+          Unsupported operating system:
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+        success_msg: "Ubuntu detected."
+
+    - name: Verify Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution_version is version('24.04', '>=')
+          - ansible_distribution_version is version('25.00', '<')
+        fail_msg: >
+          Unsupported Ubuntu version:
+          {{ ansible_distribution_version }}.
+          This playbook currently supports Ubuntu 24.04.x only.
+        success_msg: >
+          Ubuntu {{ ansible_distribution_version }} detected.
+
+
+    # ---------------------------------------------------------
+    # SAFETY CHECK 2 - Disk space
+    # ---------------------------------------------------------
+
+    - name: Check root filesystem
+      ansible.builtin.shell:
+        cmd: "df -BG / --output=avail | tail -1 | tr -dc '0-9'"
+      register: root_free_space
+      changed_when: false
+
+    - name: Display available root filesystem space
+      ansible.builtin.debug:
+        msg: >
+          Available space on /:
+          {{ root_free_space.stdout | int }} GB
+
+    - name: Stop if insufficient disk space
+      ansible.builtin.assert:
+        that:
+          - root_free_space.stdout | int >= min_free_space_gb
+        fail_msg: >
+          PATCH ABORTED:
+          only {{ root_free_space.stdout | int }} GB is available on /.
+          Minimum required: {{ min_free_space_gb }} GB.
+        success_msg: >
+          Disk space check passed:
+          {{ root_free_space.stdout | int }} GB available.
+
+
+    # ---------------------------------------------------------
+    # SAFETY CHECK 3 - APT cache/update
+    # ---------------------------------------------------------
+
+    - name: Update APT package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Check available package updates
+      ansible.builtin.shell:
+        cmd: apt list --upgradable 2>/dev/null
+      register: available_updates
+      changed_when: false
+
+    - name: Display available updates
+      ansible.builtin.debug:
+        var: available_updates.stdout_lines
+
+
+    # ---------------------------------------------------------
+    # PATCH
+    # ---------------------------------------------------------
+
+    - name: Upgrade installed packages
+      ansible.builtin.apt:
+        name: "*"
+        state: latest
+        update_cache: false
+        autoremove: true
+      register: apt_upgrade
+
+    - name: Display patch result
+      ansible.builtin.debug:
+        msg: >
+          Package upgrade completed.
+          Changed={{ apt_upgrade.changed }}
+
+
+    # ---------------------------------------------------------
+    # REBOOT CHECK
+    # ---------------------------------------------------------
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Display reboot requirement
+      ansible.builtin.debug:
+        msg: >
+          Reboot required:
+          {{ reboot_required.stat.exists }}
+
+
+    # ---------------------------------------------------------
+    # REBOOT
+    # ---------------------------------------------------------
+
+    - name: Reboot server when required
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        connect_timeout: 10
+        pre_reboot_delay: 5
+        post_reboot_delay: 30
+      when: reboot_required.stat.exists
+
+
+    # ---------------------------------------------------------
+    # POST-CHECK
+    # ---------------------------------------------------------
+
+    - name: Gather facts after reboot
+      ansible.builtin.setup:
+
+    - name: Display final server state
+      ansible.builtin.debug:
+        msg:
+          - "Hostname: {{ ansible_hostname }}"
+          - "Ubuntu: {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "Uptime: {{ ansible_uptime_seconds }} seconds"
+
+    - name: Verify server is running normally
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version('24.04', '>=')
+          - ansible_distribution_version is version('25.00', '<')
+        fail_msg: "Post-patch validation failed."
+        success_msg: "Post-patch validation successful."
