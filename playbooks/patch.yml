@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    min_free_space_gb: 76
+    min_free_space_gb: 10
 
   tasks:
 
