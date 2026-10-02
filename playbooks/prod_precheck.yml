@@ -1,0 +1,97 @@
+---
+- name: PROD Ubuntu Precheck
+  hosts: prod
+  become: true
+  gather_facts: true
+
+  vars:
+    min_root_free_gb: 5
+
+  tasks:
+
+    - name: Verify root privileges
+      ansible.builtin.command: id -u
+      register: effective_uid
+      changed_when: false
+      failed_when: effective_uid.stdout | trim != "0"
+
+    - name: Verify operating system is Ubuntu
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+        fail_msg: >-
+          {{ inventory_hostname }} is running
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+        success_msg: >-
+          {{ inventory_hostname }}:
+          Ubuntu {{ ansible_distribution_version }}
+
+    - name: Display system information
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Hostname: {{ ansible_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "Uptime: {{ (ansible_uptime_seconds / 86400) | int }} days"
+
+    - name: Find root filesystem information
+      ansible.builtin.set_fact:
+        root_mount: >-
+          {{ ansible_mounts
+             | selectattr('mount', 'equalto', '/')
+             | first }}
+
+    - name: Calculate root filesystem free space
+      ansible.builtin.set_fact:
+        root_free_gb: >-
+          {{ (root_mount.size_available / 1073741824) | round(2) }}
+
+    - name: Display root filesystem free space
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          / has {{ root_free_gb }} GB free
+
+    - name: Verify minimum root filesystem free space
+      ansible.builtin.assert:
+        that:
+          - root_free_gb | float >= min_root_free_gb
+        fail_msg: >-
+          PRECHECK FAILED:
+          {{ inventory_hostname }} has only {{ root_free_gb }} GB free on /.
+          Minimum required is {{ min_root_free_gb }} GB.
+        success_msg: >-
+          Disk space OK:
+          {{ root_free_gb }} GB available on /.
+
+    - name: Check whether reboot is already required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Report existing reboot requirement
+      ansible.builtin.debug:
+        msg: >-
+          Reboot currently required:
+          {{ reboot_required.stat.exists }}
+
+    - name: Check available package updates
+      ansible.builtin.shell:
+        cmd: apt list --upgradable 2>/dev/null
+      register: available_updates
+      changed_when: false
+
+    - name: Count available package updates
+      ansible.builtin.set_fact:
+        update_count: >-
+          {{ available_updates.stdout_lines
+             | reject('match', '^Listing')
+             | list
+             | length }}
+
+    - name: Display available update count
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ update_count }} packages can be upgraded.
