@@ -1,3 +1,4 @@
+
 ---
 - name: PROD Ubuntu Precheck
   hosts: prod
@@ -9,11 +10,53 @@
 
   tasks:
 
+    # ---------------------------------------------------------
+    # SSH CONNECTION DIAGNOSTICS
+    # ---------------------------------------------------------
+
+    - name: Display configured Ansible SSH user
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          Configured SSH user:
+          {{ ansible_user |
+             default(ansible_ssh_user |
+             default('Not explicitly configured')) }}
+
+    - name: Identify actual SSH login user
+      ansible.builtin.command:
+        cmd: whoami
+      become: false
+      register: ssh_login_user
+      changed_when: false
+
+    - name: Display actual SSH login user
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          Connected via SSH as {{ ssh_login_user.stdout }}
+
+    # ---------------------------------------------------------
+    # ROOT PRIVILEGES
+    # ---------------------------------------------------------
+
     - name: Verify root privileges
-      ansible.builtin.command: id -u
+      ansible.builtin.command:
+        cmd: id -u
       register: effective_uid
       changed_when: false
-      failed_when: effective_uid.stdout | trim != "0"
+      failed_when: effective_uid.stdout | trim != '0'
+
+    - name: Confirm privilege escalation
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          Privilege escalation successful.
+          Effective UID: {{ effective_uid.stdout }}
+
+    # ---------------------------------------------------------
+    # OPERATING SYSTEM
+    # ---------------------------------------------------------
 
     - name: Verify operating system is Ubuntu
       ansible.builtin.assert:
@@ -21,10 +64,29 @@
           - ansible_distribution == "Ubuntu"
         fail_msg: >-
           {{ inventory_hostname }} is running
-          {{ ansible_distribution }} {{ ansible_distribution_version }}
+          {{ ansible_distribution }}
+          {{ ansible_distribution_version }}
         success_msg: >-
           {{ inventory_hostname }}:
           Ubuntu {{ ansible_distribution_version }}
+
+    - name: Verify Ubuntu 24.04 LTS
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution_version is version('24.04', '>=')
+          - ansible_distribution_version is version('24.10', '<')
+        fail_msg: >-
+          PRECHECK FAILED:
+          {{ inventory_hostname }} is running
+          Ubuntu {{ ansible_distribution_version }}.
+          Expected Ubuntu 24.04 LTS.
+        success_msg: >-
+          {{ inventory_hostname }}:
+          Supported Ubuntu 24.04 LTS detected.
+
+    # ---------------------------------------------------------
+    # SYSTEM INFORMATION
+    # ---------------------------------------------------------
 
     - name: Display system information
       ansible.builtin.debug:
@@ -34,6 +96,10 @@
           - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
           - "Kernel: {{ ansible_kernel }}"
           - "Uptime: {{ (ansible_uptime_seconds / 86400) | int }} days"
+
+    # ---------------------------------------------------------
+    # ROOT FILESYSTEM
+    # ---------------------------------------------------------
 
     - name: Find root filesystem information
       ansible.builtin.set_fact:
@@ -45,7 +111,8 @@
     - name: Calculate root filesystem free space
       ansible.builtin.set_fact:
         root_free_gb: >-
-          {{ (root_mount.size_available / 1073741824) | round(2) }}
+          {{ (root_mount.size_available / 1073741824)
+             | round(2) }}
 
     - name: Display root filesystem free space
       ansible.builtin.debug:
@@ -59,11 +126,30 @@
           - root_free_gb | float >= min_root_free_gb
         fail_msg: >-
           PRECHECK FAILED:
-          {{ inventory_hostname }} has only {{ root_free_gb }} GB free on /.
+          {{ inventory_hostname }} has only
+          {{ root_free_gb }} GB free on /.
           Minimum required is {{ min_root_free_gb }} GB.
         success_msg: >-
           Disk space OK:
           {{ root_free_gb }} GB available on /.
+
+    # ---------------------------------------------------------
+    # BOOT FILESYSTEM INFORMATION
+    # ---------------------------------------------------------
+
+    - name: Check boot filesystem free space
+      ansible.builtin.command:
+        cmd: df -Pk /boot
+      register: boot_disk
+      changed_when: false
+
+    - name: Display boot filesystem information
+      ansible.builtin.debug:
+        var: boot_disk.stdout_lines
+
+    # ---------------------------------------------------------
+    # REBOOT REQUIREMENT
+    # ---------------------------------------------------------
 
     - name: Check whether reboot is already required
       ansible.builtin.stat:
@@ -73,12 +159,17 @@
     - name: Report existing reboot requirement
       ansible.builtin.debug:
         msg: >-
+          {{ inventory_hostname }}:
           Reboot currently required:
           {{ reboot_required.stat.exists }}
 
+    # ---------------------------------------------------------
+    # AVAILABLE PACKAGE UPDATES
+    # ---------------------------------------------------------
+
     - name: Check available package updates
-      ansible.builtin.shell:
-        cmd: apt list --upgradable 2>/dev/null
+      ansible.builtin.command:
+        cmd: apt list --upgradable
       register: available_updates
       changed_when: false
 
@@ -87,6 +178,7 @@
         update_count: >-
           {{ available_updates.stdout_lines
              | reject('match', '^Listing')
+             | reject('equalto', '')
              | list
              | length }}
 
@@ -95,3 +187,20 @@
         msg: >-
           {{ inventory_hostname }}:
           {{ update_count }} packages can be upgraded.
+
+    # ---------------------------------------------------------
+    # PRECHECK SUMMARY
+    # ---------------------------------------------------------
+
+    - name: Display precheck summary
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "SSH user: {{ ssh_login_user.stdout }}"
+          - "Root privileges: OK"
+          - "Ubuntu: {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "Root free space: {{ root_free_gb }} GB"
+          - "Available updates: {{ update_count }}"
+          - "Reboot required: {{ reboot_required.stat.exists }}"
+          - "PRECHECK COMPLETED SUCCESSFULLY"
