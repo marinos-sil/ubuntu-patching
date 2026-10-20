@@ -1,0 +1,150 @@
+---
+- name: PROD Docker container state health check - k-connect
+  hosts: k-connect
+  become: true
+  gather_facts: false
+
+  vars:
+    health_check_stage: before_stop
+    valid_health_check_stages:
+      - before_stop
+      - ready_for_patch
+      - after_reboot
+      - after_start
+
+    always_running_containers:
+      - kafka-webhook-alerts
+      - node_exporter
+      - kafka-connect
+
+    manually_managed_containers:
+      - nbr-postgres-loader
+      - nbr-cdrs-kafka-loader
+      - brm2erp_fatal_shutdown
+      - brm2erp_6
+      - brm2erp_5
+      - brm2erp_4
+      - brm2erp_3
+      - brm2erp_2
+      - brm2erp_1
+
+    expected_restart_policies:
+      kafka-webhook-alerts: always
+      node_exporter: unless-stopped
+      kafka-connect: unless-stopped
+      nbr-postgres-loader: always
+      nbr-cdrs-kafka-loader: always
+      brm2erp_fatal_shutdown: on-failure
+      brm2erp_6: on-failure
+      brm2erp_5: on-failure
+      brm2erp_4: on-failure
+      brm2erp_3: on-failure
+      brm2erp_2: on-failure
+      brm2erp_1: on-failure
+
+  tasks:
+    - name: Validate selected health check stage
+      ansible.builtin.assert:
+        that:
+          - health_check_stage in valid_health_check_stages
+        fail_msg: >-
+          Invalid health_check_stage={{ health_check_stage }}.
+          Allowed: {{ valid_health_check_stages | join(', ') }}
+
+    - name: Verify Docker daemon is reachable
+      ansible.builtin.command:
+        argv:
+          - docker
+          - info
+          - --format
+          - '{{ "{{" }}.ServerVersion{{ "}}" }}'
+      register: docker_info
+      changed_when: false
+
+    - name: Inspect all 12 expected containers
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - '{{ "{{" }}json .{{ "}}" }}'
+          - '{{ item }}'
+      loop: '{{ always_running_containers + manually_managed_containers }}'
+      register: docker_inspections
+      changed_when: false
+
+    - name: Build Docker state report
+      ansible.builtin.set_fact:
+        docker_state_report: >-
+          {{ docker_state_report | default([]) + [
+            {
+              'name': item.item,
+              'running': (item.stdout | from_json).State.Running | bool,
+              'status': (item.stdout | from_json).State.Status,
+              'restart_policy': (item.stdout | from_json).HostConfig.RestartPolicy.Name,
+              'health': (item.stdout | from_json).State.Health.Status
+                if (item.stdout | from_json).State.Health is defined else 'not-configured'
+            }
+          ] }}
+      loop: '{{ docker_inspections.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+
+    - name: Display observed container states
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: status={{ item.status }},
+          running={{ item.running }},
+          restart={{ item.restart_policy }},
+          health={{ item.health }}
+      loop: '{{ docker_state_report }}'
+      loop_control:
+        label: '{{ item.name }}'
+
+    - name: Verify expected restart policies have not changed
+      ansible.builtin.assert:
+        that:
+          - item.restart_policy == expected_restart_policies[item.name]
+        fail_msg: >-
+          {{ item.name }} restart policy is {{ item.restart_policy }};
+          expected {{ expected_restart_policies[item.name] }}.
+      loop: '{{ docker_state_report }}'
+      loop_control:
+        label: '{{ item.name }}'
+
+    - name: Verify the three always-required containers are running
+      ansible.builtin.assert:
+        that:
+          - item.running | bool
+          - item.health != 'unhealthy'
+        fail_msg: >-
+          {{ item.name }} must be running and not unhealthy
+          during stage {{ health_check_stage }}; observed {{ item.status }}
+          (health={{ item.health }}).
+      loop: '{{ docker_state_report | selectattr("name", "in", always_running_containers) | list }}'
+      loop_control:
+        label: '{{ item.name }}'
+
+    - name: Verify nine manually managed containers match selected stage
+      ansible.builtin.assert:
+        that:
+          - (item.running | bool) == (health_check_stage in ['before_stop', 'after_start'])
+          - (health_check_stage not in ['before_stop', 'after_start']) or item.health != 'unhealthy'
+        fail_msg: >-
+          {{ item.name }} has status={{ item.status }} but stage
+          {{ health_check_stage }} expects
+          {{ 'running' if health_check_stage in ['before_stop', 'after_start'] else 'stopped' }}.
+        success_msg: '{{ item.name }} matches {{ health_check_stage }}.'
+      loop: '{{ docker_state_report | selectattr("name", "in", manually_managed_containers) | list }}'
+      loop_control:
+        label: '{{ item.name }}'
+
+    - name: Display health check summary
+      ansible.builtin.debug:
+        msg:
+          - 'Host: {{ inventory_hostname }}'
+          - 'Stage: {{ health_check_stage }}'
+          - 'Docker version: {{ docker_info.stdout }}'
+          - 'Containers inspected: {{ docker_state_report | length }}'
+          - 'Container state checks: PASSED'
+          - 'Note: Kafka application and cluster health are NOT verified by this playbook.'
