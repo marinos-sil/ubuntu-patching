@@ -8,7 +8,7 @@
 
   vars:
     min_free_space_gb: 10
-    prod_patching_approved: false
+    prod_patching_approved: true
 
   pre_tasks:
 
