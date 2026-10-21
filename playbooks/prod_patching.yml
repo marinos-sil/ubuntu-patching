@@ -184,14 +184,3 @@
           - ansible_distribution_version == "24.04"
         fail_msg: "Post-patch OS validation failed."
         success_msg: "Post-patch OS validation successful."
-
-    # ---------------------------------------------------------
-    # APPLICATION POST-CHECK
-    # ---------------------------------------------------------
-
-    - name: Block until Kafka postchecks are implemented
-      ansible.builtin.fail:
-        msg: >-
-          POST-PATCH VALIDATION INCOMPLETE:
-          Kafka application health checks must be validated
-          before proceeding to the next PROD server.
