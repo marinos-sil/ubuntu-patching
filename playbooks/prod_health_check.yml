@@ -6,7 +6,7 @@
   gather_facts: true
 
   vars:
-    health_check_stage: before_stop
+    health_check_stage: ready_for_patch
 
     docker_host: k-connect
 
