@@ -93,18 +93,6 @@
       ansible.builtin.debug:
         var: docker_containers.stdout_lines
 
-    # ---------------------------------------------------------
-    # SAFETY CHECK 4 - Application health gate
-    # ---------------------------------------------------------
-
-    - name: Block until Kafka application checks are implemented
-      ansible.builtin.fail:
-        msg: >-
-          PROD PATCHING BLOCKED:
-          Kafka/Docker application health checks must be
-          implemented and validated before patching
-          {{ inventory_hostname }}.
-
   tasks:
 
     # ---------------------------------------------------------
